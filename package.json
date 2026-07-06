@@ -32,8 +32,7 @@
     "dev:cli": "bun run src/cli/index.ts",
     "dev:mcp": "bun run src/mcp/index.ts",
     "prepack": "bun run build",
-    "prepublishOnly": "bun run typecheck && bun test",
-    "postinstall": "mkdir -p $HOME/.hasna/releases 2>/dev/null || true"
+    "prepublishOnly": "bun run typecheck && bun test"
   },
   "keywords": [
     "releases",
