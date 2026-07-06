@@ -49,11 +49,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hasna/open-releases.git"
+    "url": "git+https://github.com/hasna/releases.git"
   },
-  "homepage": "https://github.com/hasna/open-releases",
+  "homepage": "https://github.com/hasna/releases",
   "bugs": {
-    "url": "https://github.com/hasna/open-releases/issues"
+    "url": "https://github.com/hasna/releases/issues"
   },
   "engines": {
     "bun": ">=1.0.0"
