@@ -11,7 +11,7 @@ const validRelease = {
   gitSha: "0f4c2d1",
   publishedAt: "2026-07-06T10:00:00.000Z",
   publishPath: "skill",
-  evidenceRefs: [{ id: "evd-1", kind: "uri", uri: "https://example.com/publish-log" }],
+  evidenceRefs: [{ id: "evd-1", kind: "url", uri: "https://example.com/publish-log" }],
 };
 
 describe("hasna.release.v1 vendored mirror", () => {
@@ -43,11 +43,53 @@ describe("hasna.release.v1 vendored mirror", () => {
     expect(() => parseRelease({ ...validRelease, gitSha: "xyz" })).toThrow();
   });
 
+  test("rejects evidence kinds outside the upstream EvidenceKindSchema enum", () => {
+    for (const kind of ["uri", "cli-record", "npm-registry"]) {
+      expect(() =>
+        parseRelease({ ...validRelease, evidenceRefs: [{ id: "evd-1", kind, uri: "https://example.com/log" }] }),
+      ).toThrow();
+    }
+  });
+
+  test("rejects timestamps with UTC offsets (upstream TimestampSchema is Z-only)", () => {
+    expect(() => parseRelease({ ...validRelease, publishedAt: "2026-07-06T10:00:00+02:00" })).toThrow();
+    expect(() => parseRelease({ ...validRelease, createdAt: "2026-07-06T10:00:00+02:00" })).toThrow();
+  });
+
+  test("rejects evidence URIs with schemes outside the upstream UriSchema allowlist", () => {
+    expect(() =>
+      parseRelease({ ...validRelease, evidenceRefs: [{ id: "evd-1", kind: "url", uri: "ftp://example.com/log" }] }),
+    ).toThrow();
+  });
+
   test("changelogRef is optional (deferred refs are legal)", () => {
     const parsed = parseRelease({
       ...validRelease,
-      changelogRef: { kind: "changelog", id: "changelog:@hasna/todos@1.4.2", uri: "https://example.com/changelog" },
+      changelogRef: { kind: "document", id: "changelog:@hasna/todos@1.4.2", uri: "https://example.com/changelog" },
     });
-    expect(parsed.changelogRef?.kind).toBe("changelog");
+    expect(parsed.changelogRef?.kind).toBe("document");
+  });
+
+  test('rejects the non-upstream "changelog" resource kind', () => {
+    expect(() =>
+      parseRelease({
+        ...validRelease,
+        changelogRef: { kind: "changelog", id: "changelog:@hasna/todos@1.4.2", uri: "https://example.com/changelog" },
+      }),
+    ).toThrow();
+  });
+
+  test("changelogRef without a uri requires both sourcePackage and externalId", () => {
+    expect(() =>
+      parseRelease({
+        ...validRelease,
+        changelogRef: { kind: "document", id: "changelog:x", externalId: "entry-1" },
+      }),
+    ).toThrow(/sourcePackage/);
+    const parsed = parseRelease({
+      ...validRelease,
+      changelogRef: { kind: "document", id: "changelog:x", externalId: "entry-1", sourcePackage: "@hasna/changelog" },
+    });
+    expect(parsed.changelogRef?.externalId).toBe("entry-1");
   });
 });

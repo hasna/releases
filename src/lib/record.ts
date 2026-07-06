@@ -4,7 +4,7 @@ import { ledgerDbPath } from "./config.js";
 import { ReleaseLedger } from "./ledger.js";
 import { emitReleasePublished, type EmitReleasePublishedOptions } from "./events.js";
 import { buildFanoutTasks, dispatchFanoutTasks, type CommandRunner, type FanoutResult } from "./fanout.js";
-import { parseRelease, type EvidencePointer, type Release, type ResourcePointer } from "../vendor/contracts.js";
+import { parseRelease, type EvidencePointer, type Release, type ResourcePointerInput } from "../vendor/contracts.js";
 import type { ReleasePublishedData } from "../vendor/events-catalog.js";
 
 export interface PackageSpec {
@@ -53,20 +53,30 @@ export interface RecordReleaseResult {
   fanout: FanoutResult | null;
 }
 
+/** Normalize a user-supplied timestamp to the upstream Z-only ISO format. */
+function normalizeTimestamp(value: string, flag: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) throw new Error(`Invalid ${flag} timestamp: ${value}`);
+  return parsed.toISOString();
+}
+
 export function buildReleaseDocument(input: RecordReleaseInput): Release {
   const now = new Date().toISOString();
+  // Evidence kinds come from the upstream `EvidenceKindSchema` enum: caller
+  // URIs are "url" evidence; the synthesized CLI receipt pointer is "other".
   const evidenceRefs: EvidencePointer[] = input.evidenceUris?.length
-    ? input.evidenceUris.map((uri) => ({ id: `evd-${randomUUID()}`, kind: "uri", uri }))
+    ? input.evidenceUris.map((uri) => ({ id: `evd-${randomUUID()}`, kind: "url" as const, uri }))
     : [
         {
           id: `evd-${randomUUID()}`,
-          kind: "cli-record",
+          kind: "other",
           uri: `https://www.npmjs.com/package/${input.package}/v/${input.version}`,
           summary: `Recorded via releases CLI (${input.publishPath} publish path) at ${now}`,
         },
       ];
-  const changelogRef: ResourcePointer | undefined = input.changelogRefUri
-    ? { kind: "changelog", id: `changelog:${input.package}@${input.version}`, uri: input.changelogRefUri }
+  // Upstream `ResourceKindSchema` has no "changelog" kind; a changelog entry is a "document".
+  const changelogRef: ResourcePointerInput | undefined = input.changelogRefUri
+    ? { kind: "document", id: `changelog:${input.package}@${input.version}`, uri: input.changelogRefUri }
     : undefined;
   return parseRelease({
     schema: "hasna.release.v1",
@@ -76,7 +86,7 @@ export function buildReleaseDocument(input: RecordReleaseInput): Release {
     package: input.package,
     version: input.version,
     gitSha: input.gitSha,
-    publishedAt: input.publishedAt ?? now,
+    publishedAt: input.publishedAt ? normalizeTimestamp(input.publishedAt, "--published-at") : now,
     publishPath: input.publishPath,
     ...(changelogRef ? { changelogRef } : {}),
     evidenceRefs,
