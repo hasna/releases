@@ -1,0 +1,74 @@
+{
+  "name": "@hasna/releases",
+  "version": "0.1.0",
+  "description": "Release ledger, publish receipts, downstream fan-out, and npm reconciliation CLI + MCP server for Hasna-coded apps",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "releases": "dist/cli/index.js",
+    "releases-mcp": "dist/mcp/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp/index.d.ts",
+      "import": "./dist/mcp/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "bun run clean && bun build src/index.ts --outdir dist --target bun --external bun:sqlite && bun build src/cli/index.ts --outdir dist/cli --target bun --external @modelcontextprotocol/sdk --external bun:sqlite && bun build src/mcp/index.ts --outdir dist/mcp --target bun --external @modelcontextprotocol/sdk --external bun:sqlite && tsc -p tsconfig.build.json --emitDeclarationOnly --outDir dist",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "dev:cli": "bun run src/cli/index.ts",
+    "dev:mcp": "bun run src/mcp/index.ts",
+    "prepack": "bun run build",
+    "prepublishOnly": "bun run typecheck && bun test",
+    "postinstall": "mkdir -p $HOME/.hasna/releases 2>/dev/null || true"
+  },
+  "keywords": [
+    "releases",
+    "release-ledger",
+    "publish",
+    "npm",
+    "mcp",
+    "cli",
+    "hasna"
+  ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hasna/open-releases.git"
+  },
+  "homepage": "https://github.com/hasna/open-releases",
+  "bugs": {
+    "url": "https://github.com/hasna/open-releases/issues"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  },
+  "author": "Hasna",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@hasna/events": "^0.1.13",
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "commander": "^13.1.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.4",
+    "typescript": "^5.7.3"
+  }
+}
