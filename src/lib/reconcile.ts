@@ -15,6 +15,8 @@ export interface ReconcileEntry {
   status: ReconcileStatus;
   registry_version?: string;
   ledger_latest?: string;
+  /** Set when the ledger has records newer than the npm registry latest (e.g. a recorded publish that failed or was rolled back). */
+  ledger_ahead?: boolean;
   flagged?: boolean;
   backfilled_record_id?: string;
   detail?: string;
@@ -98,7 +100,9 @@ function buildBackfilledRelease(pkg: string, view: RegistryView, ledger: Release
     evidenceRefs: [
       {
         id: `evd-${randomUUID()}`,
-        kind: "npm-registry",
+        // Synthesized registry pointer; upstream `EvidenceKindSchema` has no
+        // registry-specific kind, so this is "other" evidence.
+        kind: "other",
         uri: `https://www.npmjs.com/package/${pkg}/v/${view.version}`,
         summary: "Backfilled by releases reconcile from npm registry latest",
       },
@@ -144,7 +148,19 @@ export function reconcileReleases(options: ReconcileOptions = {}): ReconcileRepo
         continue;
       }
       if (ledger.has(pkg, version)) {
-        entries.push({ package: pkg, status: "in_sync", registry_version: version, ledger_latest: ledgerLatest });
+        // The registry latest is in the ledger, but the ledger may be *ahead*
+        // (a recorded publish that never landed on npm or was rolled back).
+        // Surface that explicitly instead of reporting a silent in_sync.
+        const ledgerAhead = Boolean(ledgerLatest) && ledgerLatest !== version;
+        entries.push({
+          package: pkg,
+          status: "in_sync",
+          registry_version: version,
+          ledger_latest: ledgerLatest,
+          ...(ledgerAhead
+            ? { ledger_ahead: true, detail: `ledger has newer records than npm latest (ledger ${ledgerLatest}, npm ${version})` }
+            : {}),
+        });
         continue;
       }
       try {

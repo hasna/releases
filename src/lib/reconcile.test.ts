@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { ReleaseLedger } from "./ledger.js";
 import { reconcileReleases } from "./reconcile.js";
 import type { CommandRunner } from "./fanout.js";
-import type { Release } from "../vendor/contracts.js";
+import { parseRelease, type Release } from "../vendor/contracts.js";
 
 function seededLedger(): ReleaseLedger {
   const ledger = new ReleaseLedger(new Database(":memory:"));
@@ -63,6 +63,36 @@ describe("reconcileReleases", () => {
     expect(backfilled.gitSha).toBe("aa11bb22cc");
     expect(backfilled.appId).toBe("open-todos");
     expect(backfilled.metadata?.["flagged"]).toBe("publish-bypassed-ledger");
+    // The backfilled row is itself a contract-valid document (upstream evidence kind).
+    expect(backfilled.evidenceRefs[0]?.kind).toBe("other");
+    expect(() => parseRelease(JSON.parse(JSON.stringify(backfilled)))).not.toThrow();
+    ledger.close();
+  });
+
+  test("surfaces ledger-ahead drift on in_sync entries (recorded publish missing from npm latest)", () => {
+    const ledger = seededLedger();
+    ledger.insert({
+      schema: "hasna.release.v1",
+      id: "rel-seed-2",
+      createdAt: "2026-07-07T10:00:00.000Z",
+      appId: "open-todos",
+      package: "@hasna/todos",
+      version: "1.5.0",
+      gitSha: "aa11bb2",
+      publishedAt: "2026-07-07T10:00:00.000Z",
+      publishPath: "skill",
+      evidenceRefs: [{ id: "evd-2", uri: "https://example.com/log2" }],
+    });
+    const report = reconcileReleases({
+      ledger,
+      runner: npmRunner({
+        "@hasna/todos": { status: 0, stdout: JSON.stringify({ version: "1.4.2", gitHead: "0f4c2d1" }) },
+      }),
+    });
+    const entry = report.entries[0]!;
+    expect(entry.status).toBe("in_sync");
+    expect(entry.ledger_ahead).toBe(true);
+    expect(entry.detail).toMatch(/newer records than npm latest/);
     ledger.close();
   });
 
