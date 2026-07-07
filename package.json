@@ -32,8 +32,7 @@
     "dev:cli": "bun run src/cli/index.ts",
     "dev:mcp": "bun run src/mcp/index.ts",
     "prepack": "bun run build",
-    "prepublishOnly": "bun run typecheck && bun test",
-    "postinstall": "mkdir -p $HOME/.hasna/releases 2>/dev/null || true"
+    "prepublishOnly": "bun run typecheck && bun test"
   },
   "keywords": [
     "releases",
@@ -50,11 +49,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hasna/open-releases.git"
+    "url": "git+https://github.com/hasna/releases.git"
   },
-  "homepage": "https://github.com/hasna/open-releases",
+  "homepage": "https://github.com/hasna/releases",
   "bugs": {
-    "url": "https://github.com/hasna/open-releases/issues"
+    "url": "https://github.com/hasna/releases/issues"
   },
   "engines": {
     "bun": ">=1.0.0"
