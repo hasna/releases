@@ -63,7 +63,8 @@ releases shipgap --skip-fleet
 # Replay against history: what did this look like on the 29th?
 releases shipgap --only hasna/projects --as-of 2026-07-29T00:00:00Z --skip-fleet
 
-# Gate a pipeline. Exits 2 when anything is merged but unshipped.
+# Gate a pipeline. Exits 2 on a real gap, AND on a sweep that could not measure —
+# a clean result that is clean because nothing could be read is not good news.
 releases shipgap --skip-fleet --fail-on-gap
 ```
 
@@ -114,6 +115,43 @@ numbers match. Only the commit evidence distinguishes it from a healthy package.
   VPC-internal name are unreachable over ssh and perfectly reachable over SSM; an
   ssh-only sweep reports them dead. SSM runs as root, so the payload re-enters as
   the owning user or it reads the wrong `$HOME` and returns the wrong versions.
+- **A probe returning zero packages is rejected as unreliable**, not recorded as
+  an empty machine. An exit code of 0 with no output is what a broken payload
+  looks like.
+- **All three axes disclose when they could not be read.** The registry axis has
+  `registry_unknown`, the commit axis has `commits_unknown`, and the fleet axis
+  reports `measured` separately from the manifest size. `--fail-on-gap` exits
+  non-zero on an unmeasured sweep as well as on a real gap.
+- **Positive evidence outranks partial blindness.** If part of a commit history
+  is unreadable but a commit that *was* read is shipping-relevant, the gap is
+  proven and reported as `unshipped_changes` with its counts marked as a lower
+  bound — never downgraded to `commits_unknown`. Knowing of one real gap is
+  strictly more information than knowing nothing.
+
+### Read-only with respect to state — but it does execute subprocesses
+
+`shipgap` and `gates` create, modify and delete nothing: no installs, no writes,
+no publishes. They are not, however, free of subprocess execution. `shipgap`
+runs a small shell payload locally via `bash -lc` and ships the same payload to
+each machine over ssh or SSM. That payload only greps `"name"` and `"version"`
+out of `package.json` files already on disk and prints them — it installs
+nothing and triggers no lifecycle scripts — but in a tool about false
+reassurance, "read-only" must not be allowed to blur into "executes nothing".
+
+### What `--fail-on-gap` treats as failure
+
+Deliberate, because the two halves are different claims:
+
+| Condition | Gates? |
+| --- | --- |
+| A real gap (`unshipped_changes` / `behind_publish`) | yes |
+| An axis that could not be read (`registry_unknown` / `commits_unknown`) | yes |
+| A fleet sweep **attempted** that reached no machine | yes |
+| `--skip-fleet` — the fleet was deliberately not asked | **no** |
+
+Declining to ask is not the same as asking and learning nothing. Gating on
+`--skip-fleet` would make the flag useless; not gating on a fleet sweep that
+reached nothing would reintroduce exactly the blind spot this gate exists for.
 
 ### Record options
 

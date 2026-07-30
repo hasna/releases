@@ -389,6 +389,53 @@ describe("an axis that could not be read never reports clean", () => {
     expect(unmeasuredPackages([entry])).toHaveLength(1);
   });
 
+  test("a PROVEN gap survives partial blindness — positive evidence outranks unread history", () => {
+    // Regression for the precision defect accepted at merge of #3: a readable
+    // shipping commit plus an unreadable one was downgraded to commits_unknown,
+    // dropping a package we KNOW is unshipped out of the headline count.
+    const entry = classifyPackage(
+      facts({
+        commitsStatus: "unknown",
+        commitsError: "could not read 1 commit(s): sha2abcd",
+        commitsSincePublish: [
+          { sha: "sha1", committedAt: "2026-07-26T00:00:00Z", paths: ["src/a.ts"] },
+        ],
+      }),
+    );
+    expect(entry.shipStatus).toBe("unshipped_changes");
+    expect(entry.shippingCommitsSincePublish).toBe(1);
+    expect(mergedButUnshipped([entry])).toHaveLength(1);
+    // ...and it is NOT double-counted as unmeasured.
+    expect(unmeasuredPackages([entry])).toHaveLength(0);
+  });
+
+  test("a proven-but-partial gap marks its counts as a lower bound and says why", () => {
+    const entry = classifyPackage(
+      facts({
+        commitsStatus: "unknown",
+        commitsError: "could not read 1 commit(s): sha2abcd",
+        commitsSincePublish: [{ sha: "sha1", committedAt: "2026-07-26T00:00:00Z", paths: ["src/a.ts"] }],
+      }),
+    );
+    expect(entry.commitCountsAreFloor).toBe(true);
+    expect(entry.reasons.join(" ")).toContain("at least 1 shipping-relevant commit");
+    expect(entry.reasons.join(" ")).toContain("already proven by what WAS read");
+  });
+
+  test("partial blindness with only NON-shipping readable commits is still commits_unknown", () => {
+    // The boundary: a docs-only readable commit proves nothing, so the unread
+    // history remains decisive. This is the case the old fixture accidentally
+    // tested, and it must keep working.
+    const entry = classifyPackage(
+      facts({
+        commitsStatus: "unknown",
+        commitsSincePublish: [{ sha: "sha1", committedAt: "2026-07-26T00:00:00Z", paths: ["README.md"] }],
+      }),
+    );
+    expect(entry.shipStatus).toBe("commits_unknown");
+    expect(unmeasuredPackages([entry])).toHaveLength(1);
+  });
+
   test("registry_unknown behaves the same way on both counts", () => {
     const entry = classifyPackage(
       facts({ registryStatus: "unknown", registryError: "registry 402", registryLatest: null }),
@@ -414,7 +461,7 @@ describe("--fail-on-gap must not exit 0 on a blind sweep", () => {
   const meta = {
     as_of: null,
     inventory: { orgs: ["hasna"], repos_enumerated: 1, completeness: [] },
-    fleet: { machines_in_manifest: 18, measured: [], unreachable: [] },
+    fleet: { machines_in_manifest: 18, attempted: false, measured: [], unreachable: [] },
   };
 
   test("a sweep that found no gaps because it could read nothing FAILS the gate", () => {
@@ -446,6 +493,25 @@ describe("--fail-on-gap must not exit 0 on a blind sweep", () => {
   test("a real gap still fails the gate", () => {
     const gap = buildReport([classifyPackage(facts({ branchVersion: "2.0.0" }))], meta);
     expect(shouldFailGate(gap)).toBe(true);
+  });
+
+  test("a fleet sweep that was ATTEMPTED and reached no machine fails the gate", () => {
+    const blindFleet = buildReport([classifyPackage(facts({ commitsStatus: "measured" }))], {
+      ...meta,
+      fleet: { machines_in_manifest: 18, attempted: true, measured: [], unreachable: [] },
+    });
+    expect(blindFleet.summary.merged_but_unshipped).toBe(0);
+    expect(blindFleet.summary.unmeasured).toBe(0);
+    // Nothing wrong was found because no machine answered. Not good news.
+    expect(shouldFailGate(blindFleet)).toBe(true);
+  });
+
+  test("--skip-fleet does NOT fail the gate — declining to ask is not failing to learn", () => {
+    const skipped = buildReport([classifyPackage(facts({ commitsStatus: "measured" }))], {
+      ...meta,
+      fleet: { machines_in_manifest: 18, attempted: false, measured: [], unreachable: [] },
+    });
+    expect(shouldFailGate(skipped)).toBe(false);
   });
 });
 
@@ -545,7 +611,7 @@ describe("report", () => {
         repos_enumerated: 3,
         completeness: [{ org: "hasna", enumerated: 3, org_reports: 3, complete: true }],
       },
-      fleet: { machines_in_manifest: 18, measured: ["station01"], unreachable: [] },
+      fleet: { machines_in_manifest: 18, attempted: true, measured: ["station01"], unreachable: [] },
     });
     expect(report.summary.merged_but_unshipped).toBe(2);
     expect(report.entries[0]?.repo).toBe("hasna/unshipped");

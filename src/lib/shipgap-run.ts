@@ -191,6 +191,7 @@ export async function runShipGap(options: ShipGapRunOptions = {}): Promise<ShipG
     inventory: { orgs, repos_enumerated: repos.length, completeness },
     fleet: {
       machines_in_manifest: sweep.machines.length,
+      attempted: !options.skipFleet,
       measured: reachable.map((probe) => probe.machine).sort(),
       unreachable: unreachable.sort((a, b) => a.machine.localeCompare(b.machine)),
     },

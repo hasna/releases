@@ -206,11 +206,15 @@ describe("commits since publish", () => {
   });
 
   test("a partially readable history is also ok:false — the unread commit may be the one that matters", () => {
+    // The readable commit is deliberately SHIPPING-relevant (src/), not a
+    // docs-only change. With a docs-only fixture the readable commit proves
+    // nothing, so this test would pass no matter how the classifier treated
+    // partial blindness — vacuously green.
     const runner = scriptedRunner((_command, args) => {
       const target = args[1] ?? "";
       if (target.includes("/commits?")) return ok("sha1\nsha2");
       if (target.endsWith("/commits/sha1")) {
-        return ok(JSON.stringify({ sha: "sha1", committedAt: "2026-07-26T00:00:00Z", paths: ["README.md"] }));
+        return ok(JSON.stringify({ sha: "sha1", committedAt: "2026-07-26T00:00:00Z", paths: ["src/a.ts"] }));
       }
       return err("gh: Not Found");
     });
