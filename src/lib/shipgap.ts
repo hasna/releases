@@ -369,25 +369,40 @@ function classifyShip(facts: PackageFacts, reasons: string[]): ShipStatus {
   }
 
   // Only now, having established that branch and registry agree on the version,
-  // does the commit history decide the answer. If it could not be read, the
-  // honest answer is that we do not know — never "shipped". This detector's
-  // whole purpose is finding merged-but-unshipped work, so answering "clean"
-  // when blind is the exact failure it exists to catch.
+  // does the commit history decide the answer.
+  //
+  // Positive evidence outranks partial blindness. If even ONE readable commit
+  // is shipping-relevant, the gap is proven and no amount of unread history
+  // makes it less proven — knowing of a real gap is strictly more information
+  // than knowing nothing. Reporting `commits_unknown` here would drop a package
+  // we KNOW is unshipped out of the headline count.
+  const shipping = facts.commitsSincePublish.filter((commit) => commit.paths.some(isShippingRelevantPath));
+  if (shipping.length > 0) {
+    const src = shipping.filter((commit) => commit.paths.some(isSrcPath));
+    // Truncation and unread commits both mean the same thing for the counts:
+    // what we report is a lower bound.
+    const partial = facts.commitsTruncated === true || facts.commitsStatus === "unknown";
+    const floor = partial ? "at least " : "";
+    reasons.push(
+      `${floor}${shipping.length} shipping-relevant commit(s) (${src.length} touching src/) landed on ${facts.defaultBranch} after ${registryLatest} was published at ${facts.registryLatestPublishedAt} — with no version bump, the published dist does not contain them`,
+    );
+    if (facts.commitsStatus === "unknown") {
+      reasons.push(
+        `part of the history could not be read${facts.commitsError ? ` (${facts.commitsError})` : ""}, so the counts above are a lower bound — but the gap is already proven by what WAS read`,
+      );
+    }
+    return "unshipped_changes";
+  }
+
+  // No positive evidence. Now an unreadable history is decisive: the honest
+  // answer is that we do not know — never "shipped". This detector's whole
+  // purpose is finding merged-but-unshipped work, so answering "clean" when
+  // blind is the exact failure it exists to catch.
   if (facts.commitsStatus === "unknown") {
     reasons.push(
       `branch and registry agree at ${registryLatest}, but the commit history since that publish could not be read${facts.commitsError ? ` (${facts.commitsError})` : ""} — UNMEASURED, not clean; an unshipped fix would be invisible here`,
     );
     return "commits_unknown";
-  }
-
-  const shipping = facts.commitsSincePublish.filter((commit) => commit.paths.some(isShippingRelevantPath));
-  if (shipping.length > 0) {
-    const src = shipping.filter((commit) => commit.paths.some(isSrcPath));
-    const floor = facts.commitsTruncated ? "at least " : "";
-    reasons.push(
-      `${floor}${shipping.length} shipping-relevant commit(s) (${src.length} touching src/) landed on ${facts.defaultBranch} after ${registryLatest} was published at ${facts.registryLatestPublishedAt} — with no version bump, the published dist does not contain them`,
-    );
-    return "unshipped_changes";
   }
 
   reasons.push(`default branch and registry agree at ${registryLatest} with no shipping-relevant commits since`);
@@ -450,7 +465,7 @@ export function classifyPackage(facts: PackageFacts): ShipGapEntry {
     shippingCommitsSincePublish: shipping.length,
     srcCommitsSincePublish: src.length,
     latestUnshippedSha: shipping[0]?.sha ?? null,
-    commitCountsAreFloor: facts.commitsTruncated === true,
+    commitCountsAreFloor: facts.commitsTruncated === true || facts.commitsStatus === "unknown",
     fleet,
     reasons,
   };
@@ -473,6 +488,12 @@ export interface ShipGapReport {
   };
   fleet: {
     machines_in_manifest: number;
+    /**
+     * Whether a fleet sweep was attempted at all. `false` means `--skip-fleet`:
+     * the operator deliberately did not ask, which is not the same as asking and
+     * learning nothing. The gate distinguishes the two.
+     */
+    attempted: boolean;
     measured: string[];
     unreachable: Array<{ machine: string; reason: string }>;
   };
@@ -505,7 +526,16 @@ export function mergedButUnshipped(entries: ShipGapEntry[]): ShipGapEntry[] {
   );
 }
 
-/** Packages where an axis could not be read, on either the ship or the fleet side. */
+/**
+ * Packages where the SHIP axis could not be read — the registry lookup failed,
+ * or the commit history was unreadable with no positive evidence in what was.
+ *
+ * Deliberately scoped to `shipStatus` and NOT to the fleet axis. `--skip-fleet`
+ * is a legitimate, explicitly requested mode, and a package whose fleet state
+ * was never sought is not "unmeasured" in any sense the operator cares about.
+ * A fleet sweep that was ATTEMPTED and reached nothing is a different thing and
+ * does gate — see `shouldFailGate`, which checks it separately.
+ */
 export function unmeasuredPackages(entries: ShipGapEntry[]): ShipGapEntry[] {
   return entries.filter(
     (entry) => entry.shipStatus === "commits_unknown" || entry.shipStatus === "registry_unknown",
@@ -520,7 +550,16 @@ export function unmeasuredPackages(entries: ShipGapEntry[]): ShipGapEntry[] {
  * reassurance this tool exists to detect.
  */
 export function shouldFailGate(report: ShipGapReport): boolean {
-  return report.summary.merged_but_unshipped > 0 || report.summary.unmeasured > 0;
+  if (report.summary.merged_but_unshipped > 0) return true;
+  if (report.summary.unmeasured > 0) return true;
+  // A fleet sweep that was ATTEMPTED and reached no machine is a blind axis,
+  // which is the whole subject of this gate. Deliberately skipping the fleet is
+  // not: `--skip-fleet` is an explicit request for a metadata-only answer, and
+  // failing it would make the flag useless. Intent is the distinction.
+  if (report.fleet.attempted && report.fleet.machines_in_manifest > 0 && report.fleet.measured.length === 0) {
+    return true;
+  }
+  return false;
 }
 
 export function buildReport(
