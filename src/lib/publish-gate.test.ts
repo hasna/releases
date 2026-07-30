@@ -30,6 +30,19 @@ describe("script reference extraction", () => {
     expect(referencedScripts("npm run build")).toEqual(["build"]);
     expect(referencedScripts("pnpm run lint && yarn verify")).toEqual(["lint", "verify"]);
   });
+
+  test("a file path executed directly is not a script name", () => {
+    // Measured false positive: `@hasna/accounts` prepublishOnly runs
+    // `bun run scripts/release-provenance.ts reject-direct-publish`. Reading
+    // "scripts" as a script name reported a working gate as unpassable.
+    expect(referencedScripts("bun run scripts/release-provenance.ts reject-direct-publish")).toEqual([]);
+    expect(referencedScripts("bun scripts/build.ts")).toEqual([]);
+    expect(referencedScripts("bun run verify.ts")).toEqual([]);
+  });
+
+  test("a real script name alongside a file path is still found", () => {
+    expect(referencedScripts("bun run build && bun run scripts/check.ts")).toEqual(["build"]);
+  });
 });
 
 // ---------------------------------------------------------------------------

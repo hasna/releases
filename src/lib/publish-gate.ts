@@ -102,16 +102,25 @@ function isIgnored(path: string, gitignore: string[]): boolean {
   });
 }
 
-/** `bun run x`, `npm run x`, `yarn x`, `pnpm run x` -> x */
+/**
+ * `bun run x`, `npm run x`, `yarn x`, `pnpm run x` -> x
+ *
+ * A path is not a script name. `bun run scripts/release-provenance.ts` executes
+ * a FILE; reading its first path segment as a script name and then reporting
+ * "no such script" is a false positive that makes a working gate look broken.
+ */
 export function referencedScripts(command: string): string[] {
   const names: string[] = [];
-  const re = /\b(?:bun|npm|pnpm|yarn)\s+(?:run\s+)?([a-zA-Z][\w:.-]*)/g;
+  const re = /\b(?:bun|npm|pnpm|yarn)\s+(?:run\s+)?([^\s;&|]+)/g;
   let match: RegExpExecArray | null;
   while ((match = re.exec(command)) !== null) {
-    const name = match[1];
-    // `bun test`, `bun x`, `npm publish` etc. are binaries, not script names —
-    // but if a script of the same name exists it IS the script that runs.
-    if (name) names.push(name);
+    const token = match[1];
+    if (!token) continue;
+    if (!/^[a-zA-Z]/.test(token)) continue;
+    // A file being executed, not a named script.
+    if (token.includes("/") || /\.[cm]?[jt]sx?$/.test(token)) continue;
+    if (!/^[\w:.-]+$/.test(token)) continue;
+    names.push(token);
   }
   return names;
 }
