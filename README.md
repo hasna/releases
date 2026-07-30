@@ -35,6 +35,86 @@ releases reconcile @hasna/todos @hasna/events
 
 All commands print JSON. Data lives in `~/.hasna/releases` (override with `RELEASES_DATA_DIR`).
 
+## Ship-gap detection — `releases shipgap`
+
+`reconcile` answers "does the ledger agree with npm?". It cannot see the two gaps
+that actually reach users:
+
+```
+merged  !=  published  !=  installed  !=  running
+```
+
+Each link needs its own artefact and none may be inferred from the previous one.
+`shipgap` measures all three states at once — the version in `package.json` on
+the default branch, the version the npm registry serves, and the version
+installed on every machine in the fleet manifest — and reports where they
+disagree.
+
+```bash
+# Everything: both orgs, every repo, every machine in the manifest.
+releases shipgap
+
+# Just the numbers, for a dashboard or an alert.
+releases shipgap --json
+
+# Metadata only — no ssh, no SSM, no machines touched.
+releases shipgap --skip-fleet
+
+# Replay against history: what did this look like on the 29th?
+releases shipgap --only hasna/projects --as-of 2026-07-29T00:00:00Z --skip-fleet
+
+# Gate a pipeline. Exits 2 when anything is merged but unshipped.
+releases shipgap --skip-fleet --fail-on-gap
+```
+
+### What it distinguishes, and why each needs a different response
+
+| Ship status | Meaning | Response |
+| --- | --- | --- |
+| `unshipped_changes` | Branch and registry agree on the version, but commits landed after that version was published. **The published dist does not contain the merged fix.** | Bump and publish |
+| `behind_publish` | The branch carries a higher version than the registry. The bump merged; nobody published. | Publish |
+| `never_published` | Declared publishable, never appeared on the registry. | Publish, or mark private |
+| `registry_ahead` | The registry is ahead of the branch — published from somewhere other than this branch, or the branch was reverted. | Investigate |
+| `registry_unknown` | The registry could not be queried. **Unmeasured, not clean.** | Fix credentials and re-run |
+| `shipped` | Branch and registry agree with no shipping-relevant commits since. | — |
+
+| Fleet status | Meaning |
+| --- | --- |
+| `absent_everywhere` | Published, installed on no measured machine |
+| `partial_rollout` | Installed on some machines, absent on others |
+| `version_skew` | Installed everywhere, at differing versions |
+| `uniformly_stale` | Every machine agrees — and every machine is behind the registry |
+| `current` | Every measured machine is on the registry latest |
+
+`unshipped_changes` is the dangerous one because nothing about it looks wrong:
+the PR is merged, the tests are green, the task is closed, and the version
+numbers match. Only the commit evidence distinguishes it from a healthy package.
+
+### Design notes, each of them load-bearing
+
+- **The npm registry API is authoritative for "is it published", not `npm view`.**
+  `npm view` was measured returning a stale version for minutes after a
+  successful publish while `registry.npmjs.org` already served the new one.
+- **A failed registry lookup is not an absent package.** 404, 401 and 403 are
+  indistinguishable on a restricted scope, so absence is only concluded when
+  every available credential agrees. `$NPM_TOKEN` and `~/.npmrc` are not
+  necessarily the same token, and preferring the wrong one makes a published
+  package report as never published.
+- **"Shipping-relevant" is a denylist of prose and CI paths, not an `src/`
+  allowlist.** A security fix that stopped a package publishing publicly touched
+  only `package.json`, `scripts/` and `tests/`; an `src/`-only rule reports that
+  repo clean.
+- **Repo enumeration is checked against the org's own repo counts** and reported
+  as `COMPLETE` or `INCOMPLETE`. A list that looks authoritative and is not is
+  the failure this tool exists to catch.
+- **Fleet membership comes from the `machines` manifest**, and machines that
+  could not be measured are named in the output with their reason. A sweep that
+  reached 16 of 18 machines must never render as "the fleet is current".
+- **ssh is not the only transport.** Machines whose manifest address is a
+  VPC-internal name are unreachable over ssh and perfectly reachable over SSM; an
+  ssh-only sweep reports them dead. SSM runs as root, so the payload re-enters as
+  the owning user or it reads the wrong `$HOME` and returns the wrong versions.
+
 ### Record options
 
 | Flag | Meaning |
