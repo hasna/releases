@@ -5,6 +5,10 @@ import { ledgerDbPath } from "../lib/config.js";
 import { DuplicateReleaseError, ReleaseLedger } from "../lib/ledger.js";
 import { parsePackageSpec, recordRelease } from "../lib/record.js";
 import { reconcileReleases } from "../lib/reconcile.js";
+import { renderTable, runShipGap } from "../lib/shipgap-run.js";
+import { shouldFailGate } from "../lib/shipgap.js";
+import { runPublishGates } from "../lib/publish-gate-run.js";
+import { readNpmrcToken } from "../lib/npmrc.js";
 import { VERSION } from "../version.js";
 
 function printJson(value: unknown): void {
@@ -132,6 +136,93 @@ program
         timeoutMs: Number.parseInt(opts.timeout, 10) || 20_000,
       });
       printJson(report);
+    } catch (error) {
+      fail(error);
+    }
+  });
+
+program
+  .command("shipgap")
+  .description(
+    "Detect the gaps between merged, published and installed: branch package.json vs npm registry vs every fleet machine",
+  )
+  .option("--org <org>", "Org to scan (repeatable; default hasna and hasnaxyz)", collect, [])
+  .option("--scope <scope>", "Package-name scope to consider (repeatable; default @hasna/ and @hasnaxyz/)", collect, [])
+  .option("--only <org/repo>", "Restrict to specific repos (repeatable)", collect, [])
+  .option("--as-of <iso>", "Replay the detector against history at this instant")
+  .option("--skip-fleet", "Metadata-only run; do not probe machines")
+  .option("--ssm-profile <profile>", "AWS profile owning SSM-managed stations", "hasna-stations")
+  .option("--local-machine <id>", "Manifest id of the machine this runs on (probed without a network hop)")
+  .option("--concurrency <n>", "Parallel repo lookups", "8")
+  .option("--json", "Emit the full JSON report instead of a table")
+  .option("--fail-on-gap", "Exit non-zero when any merged-but-unshipped package is found, OR when any axis could not be measured")
+  .action(async (opts: {
+    org: string[];
+    scope: string[];
+    only: string[];
+    asOf?: string;
+    skipFleet?: boolean;
+    ssmProfile: string;
+    localMachine?: string;
+    concurrency: string;
+    json?: boolean;
+    failOnGap?: boolean;
+  }) => {
+    try {
+      // Read only; never printed, never logged. Restricted scopes 404 without a
+      // credential that can see them, and $NPM_TOKEN is not necessarily the same
+      // token as ~/.npmrc, so both are offered and the first that works wins.
+      const npmrcToken = readNpmrcToken();
+      const envToken = process.env.NPM_TOKEN;
+      const registryToken = npmrcToken ?? envToken;
+      const registryFallbackTokens = [envToken, npmrcToken].filter(
+        (token): token is string => Boolean(token) && token !== registryToken,
+      );
+      const report = await runShipGap({
+        ...(opts.org.length ? { orgs: opts.org } : {}),
+        ...(opts.scope.length ? { scopes: opts.scope } : {}),
+        ...(opts.only.length ? { only: opts.only } : {}),
+        ...(opts.asOf ? { asOf: opts.asOf } : {}),
+        ...(opts.skipFleet ? { skipFleet: true } : {}),
+        ...(opts.localMachine ? { localMachineId: opts.localMachine } : {}),
+        ...(registryToken ? { registryToken } : {}),
+        ...(registryFallbackTokens.length ? { registryFallbackTokens } : {}),
+        ssmProfile: opts.ssmProfile,
+        concurrency: Number.parseInt(opts.concurrency, 10) || 8,
+        onProgress: (message) => process.stderr.write(`${message}\n`),
+      });
+      if (opts.json) printJson(report);
+      else console.log(renderTable(report));
+      // A blind sweep must not exit 0: "found nothing" and "could read nothing"
+      // are different answers and only one of them is good news.
+      if (opts.failOnGap && shouldFailGate(report)) process.exit(2);
+    } catch (error) {
+      fail(error);
+    }
+  });
+
+program
+  .command("gates")
+  .description("Classify every package's publish gate: present and passing, structurally unpassable, absent, or bypassed in practice")
+  .option("--org <org>", "Org to scan (repeatable; default hasna and hasnaxyz)", collect, [])
+  .option("--only <org/repo>", "Restrict to specific repos (repeatable)", collect, [])
+  .option("--json", "Emit the full JSON report")
+  .action(async (opts: { org: string[]; only: string[]; json?: boolean }) => {
+    try {
+      const report = await runPublishGates({
+        ...(opts.org.length ? { orgs: opts.org } : {}),
+        ...(opts.only.length ? { only: opts.only } : {}),
+        onProgress: (message) => process.stderr.write(`${message}\n`),
+      });
+      if (opts.json) {
+        printJson(report);
+        return;
+      }
+      console.log(`publish gates  ${report.summary.needing_attention} of ${report.summary.packages} need attention\n`);
+      for (const entry of report.entries) {
+        if (entry.severity < 3) continue;
+        console.log(`${(entry.packageName ?? entry.repo).padEnd(30)} ${entry.status.padEnd(24)} ${entry.reasons[0] ?? ""}`);
+      }
     } catch (error) {
       fail(error);
     }
