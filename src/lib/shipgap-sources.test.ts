@@ -195,6 +195,40 @@ describe("commits since publish", () => {
     expect(fetchCommitsSince(ref, "2026-07-24T20:54:34.923Z", runner).commits).toHaveLength(0);
   });
 
+  test("a failed commit list reports ok:false, never an empty history", () => {
+    // An unreadable history returned as `[]` makes the classifier answer
+    // "shipped" for a package it could not inspect.
+    const runner = scriptedRunner(() => err("gh: API rate limit exceeded"));
+    const result = fetchCommitsSince(ref, "2026-07-24T20:54:34.923Z", runner);
+    expect(result.ok).toBe(false);
+    expect(result.commits).toHaveLength(0);
+    expect(result.error).toContain("rate limit");
+  });
+
+  test("a partially readable history is also ok:false — the unread commit may be the one that matters", () => {
+    const runner = scriptedRunner((_command, args) => {
+      const target = args[1] ?? "";
+      if (target.includes("/commits?")) return ok("sha1\nsha2");
+      if (target.endsWith("/commits/sha1")) {
+        return ok(JSON.stringify({ sha: "sha1", committedAt: "2026-07-26T00:00:00Z", paths: ["README.md"] }));
+      }
+      return err("gh: Not Found");
+    });
+    const result = fetchCommitsSince(ref, "2026-07-24T20:54:34.923Z", runner);
+    expect(result.ok).toBe(false);
+    expect(result.commits).toHaveLength(1);
+    expect(result.error).toContain("sha2");
+  });
+
+  test("a fully readable history reports ok:true", () => {
+    const runner = scriptedRunner((_command, args) => {
+      const target = args[1] ?? "";
+      if (target.includes("/commits?")) return ok("sha1");
+      return ok(JSON.stringify({ sha: "sha1", committedAt: "2026-07-26T00:00:00Z", paths: ["src/a.ts"] }));
+    });
+    expect(fetchCommitsSince(ref, "2026-07-24T20:54:34.923Z", runner).ok).toBe(true);
+  });
+
   test("flags truncation instead of silently capping", () => {
     const runner = scriptedRunner((_command, args) => {
       const target = args[1] ?? "";

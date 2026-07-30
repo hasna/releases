@@ -143,12 +143,19 @@ export async function runShipGap(options: ShipGapRunOptions = {}): Promise<ShipG
 
     let commits: PackageFacts["commitsSincePublish"] = [];
     let commitsTruncated = false;
+    let commitsStatus: PackageFacts["commitsStatus"] = "measured";
+    let commitsError: string | undefined;
     if (registry.latestPublishedAt) {
       const fetched = fetchCommitsSince(ref, registry.latestPublishedAt, runner, {
         ...(options.asOf ? { until: options.asOf } : {}),
       });
       commits = fetched.commits;
       commitsTruncated = fetched.truncated;
+      if (!fetched.ok) {
+        commitsStatus = "unknown";
+        commitsError = fetched.error;
+        options.onProgress?.(`commit history UNREADABLE for ${ref.org}/${ref.repo}: ${commitsError}`);
+      }
     }
 
     const installed: Record<string, string | null> = {};
@@ -172,6 +179,8 @@ export async function runShipGap(options: ShipGapRunOptions = {}): Promise<ShipG
       registryVersions: registry.versions,
       commitsSincePublish: commits,
       commitsTruncated,
+      commitsStatus,
+      ...(commitsError ? { commitsError } : {}),
       installed,
       unreachable: unreachableMap,
     });
@@ -197,6 +206,7 @@ const SHIP_LABEL: Record<string, string> = {
   behind_publish: "BUMPED, NOT PUBLISHED",
   never_published: "NEVER PUBLISHED",
   registry_unknown: "REGISTRY UNMEASURED",
+  commits_unknown: "COMMITS UNMEASURED",
   registry_ahead: "registry ahead of branch",
   shipped: "shipped",
   not_a_package: "-",
@@ -228,6 +238,11 @@ export function renderTable(report: ShipGapReport): string {
   );
   lines.push("");
   lines.push(`MERGED BUT UNSHIPPED RIGHT NOW: ${report.summary.merged_but_unshipped}`);
+  if (report.summary.unmeasured > 0) {
+    lines.push(
+      `UNMEASURED: ${report.summary.unmeasured} package(s) — this sweep did NOT prove the rest clean`,
+    );
+  }
   lines.push("");
 
   const rows = report.entries.filter((entry) => entry.severity > 0);

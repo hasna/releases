@@ -6,7 +6,9 @@ import {
   isShippingRelevantPath,
   mergedButUnshipped,
   parseVersion,
+  shouldFailGate,
   summarizeFleet,
+  unmeasuredPackages,
   type PackageFacts,
 } from "./shipgap.js";
 
@@ -23,6 +25,7 @@ function facts(overrides: Partial<PackageFacts> = {}): PackageFacts {
     registryLatestPublishedAt: "2026-07-01T00:00:00.000Z",
     registryVersions: ["1.0.0"],
     commitsSincePublish: [],
+    commitsStatus: "measured",
     installed: {},
     unreachable: {},
     ...overrides,
@@ -337,6 +340,112 @@ describe("ship statuses", () => {
     expect(entry.shipStatus).toBe("registry_ahead");
     // Not a merged-but-unshipped case: the registry has MORE, not less.
     expect(mergedButUnshipped([entry])).toHaveLength(0);
+  });
+
+  test("never_published is excluded from the merged-but-unshipped count", () => {
+    const entry = classifyPackage(
+      facts({ registryStatus: "absent", registryLatest: null, registryLatestPublishedAt: null, registryVersions: [] }),
+    );
+    expect(entry.shipStatus).toBe("never_published");
+    expect(mergedButUnshipped([entry])).toHaveLength(0);
+    // Not unmeasured either: the registry answered, and its answer was "no".
+    expect(unmeasuredPackages([entry])).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE UNMEASURED AXES
+//
+// Three axes can each fail to be read. All three must say so. The commit axis
+// was the one that did not: it answered `shipped`, severity 0, for a package
+// whose history it could not see — this detector's own failure mode, inside the
+// detector.
+// ---------------------------------------------------------------------------
+
+describe("an axis that could not be read never reports clean", () => {
+  test("commits_unknown fires when the history could not be read", () => {
+    const entry = classifyPackage(
+      facts({
+        commitsStatus: "unknown",
+        commitsError: "gh api rate limit exceeded",
+        commitsSincePublish: [],
+      }),
+    );
+    expect(entry.shipStatus).toBe("commits_unknown");
+    expect(entry.severity).toBeGreaterThan(0);
+    expect(entry.reasons.join(" ")).toContain("UNMEASURED");
+    expect(entry.reasons.join(" ")).toContain("gh api rate limit exceeded");
+  });
+
+  test("the same facts with a readable history DO report shipped — the state is not sticky", () => {
+    const entry = classifyPackage(facts({ commitsStatus: "measured", commitsSincePublish: [] }));
+    expect(entry.shipStatus).toBe("shipped");
+    expect(entry.severity).toBe(0);
+  });
+
+  test("an unreadable history is NOT counted as merged-but-unshipped — it is counted as unmeasured", () => {
+    const entry = classifyPackage(facts({ commitsStatus: "unknown" }));
+    expect(mergedButUnshipped([entry])).toHaveLength(0);
+    expect(unmeasuredPackages([entry])).toHaveLength(1);
+  });
+
+  test("registry_unknown behaves the same way on both counts", () => {
+    const entry = classifyPackage(
+      facts({ registryStatus: "unknown", registryError: "registry 402", registryLatest: null }),
+    );
+    expect(entry.shipStatus).toBe("registry_unknown");
+    expect(entry.severity).toBeGreaterThan(0);
+    expect(mergedButUnshipped([entry])).toHaveLength(0);
+    expect(unmeasuredPackages([entry])).toHaveLength(1);
+  });
+
+  test("commits are only consulted once branch and registry agree", () => {
+    // A version mismatch is decisive on its own; an unreadable history must not
+    // downgrade a KNOWN behind_publish into an unknown.
+    const entry = classifyPackage(
+      facts({ branchVersion: "2.0.0", registryLatest: "1.0.0", commitsStatus: "unknown" }),
+    );
+    expect(entry.shipStatus).toBe("behind_publish");
+    expect(mergedButUnshipped([entry])).toHaveLength(1);
+  });
+});
+
+describe("--fail-on-gap must not exit 0 on a blind sweep", () => {
+  const meta = {
+    as_of: null,
+    inventory: { orgs: ["hasna"], repos_enumerated: 1, completeness: [] },
+    fleet: { machines_in_manifest: 18, measured: [], unreachable: [] },
+  };
+
+  test("a sweep that found no gaps because it could read nothing FAILS the gate", () => {
+    const blind = buildReport([classifyPackage(facts({ commitsStatus: "unknown" }))], meta);
+    expect(blind.summary.merged_but_unshipped).toBe(0);
+    expect(blind.summary.unmeasured).toBe(1);
+    // Zero gaps found, and yet: not good news.
+    expect(shouldFailGate(blind)).toBe(true);
+  });
+
+  test("a registry-blind sweep also fails the gate", () => {
+    const blind = buildReport(
+      [classifyPackage(facts({ registryStatus: "unknown", registryLatest: null }))],
+      meta,
+    );
+    expect(shouldFailGate(blind)).toBe(true);
+  });
+
+  test("a genuinely clean, fully measured sweep passes the gate", () => {
+    const clean = buildReport(
+      [classifyPackage(facts({ commitsStatus: "measured", installed: { station01: "1.0.0" } }))],
+      meta,
+    );
+    expect(clean.summary.merged_but_unshipped).toBe(0);
+    expect(clean.summary.unmeasured).toBe(0);
+    expect(shouldFailGate(clean)).toBe(false);
+  });
+
+  test("a real gap still fails the gate", () => {
+    const gap = buildReport([classifyPackage(facts({ branchVersion: "2.0.0" }))], meta);
+    expect(shouldFailGate(gap)).toBe(true);
   });
 });
 

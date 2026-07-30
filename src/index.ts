@@ -50,6 +50,8 @@ export {
   isSrcPath,
   mergedButUnshipped,
   parseVersion,
+  shouldFailGate,
+  unmeasuredPackages,
   summarizeFleet,
   type CommitFact,
   type FleetBreakdown,

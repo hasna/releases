@@ -165,7 +165,7 @@ export function fetchCommitsSince(
   since: string,
   runner: Runner = defaultRunner,
   options: { until?: string; limit?: number } = {},
-): { commits: CommitFact[]; truncated: boolean } {
+): { commits: CommitFact[]; truncated: boolean; ok: boolean; error?: string } {
   const limit = options.limit ?? 20;
   const untilParam = options.until ? `&until=${encodeURIComponent(options.until)}` : "";
   const listed = runner(
@@ -178,11 +178,21 @@ export function fetchCommitsSince(
     ],
     { timeoutMs: 60_000 },
   );
-  if (listed.status !== 0) return { commits: [], truncated: false };
+  if (listed.status !== 0) {
+    // An unreadable history is NOT an empty history. Returning zero commits here
+    // makes the classifier answer "shipped" for a package it could not inspect.
+    return {
+      commits: [],
+      truncated: false,
+      ok: false,
+      error: (listed.stderr || listed.stdout).trim().split("\n").pop()?.slice(0, 200) || "commit list failed",
+    };
+  }
   const shas = listed.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
   const truncated = shas.length > limit;
 
   const commits: CommitFact[] = [];
+  const unreadable: string[] = [];
   for (const sha of shas.slice(0, limit)) {
     const detail = runner(
       "gh",
@@ -194,7 +204,12 @@ export function fetchCommitsSince(
       ],
       { timeoutMs: 60_000 },
     );
-    if (detail.status !== 0) continue;
+    if (detail.status !== 0) {
+      // Partial blindness is still blindness: a commit we could not read may be
+      // the one carrying the unshipped fix.
+      unreadable.push(sha.slice(0, 8));
+      continue;
+    }
     try {
       const parsed = JSON.parse(detail.stdout) as CommitFact;
       // The publish itself commonly lands as a version-bump commit at the same
@@ -203,10 +218,18 @@ export function fetchCommitsSince(
       if (new Date(parsed.committedAt).getTime() <= new Date(since).getTime()) continue;
       commits.push(parsed);
     } catch {
-      /* skip unparseable commit */
+      unreadable.push(sha.slice(0, 8));
     }
   }
-  return { commits, truncated };
+  if (unreadable.length > 0) {
+    return {
+      commits,
+      truncated,
+      ok: false,
+      error: `could not read ${unreadable.length} commit(s): ${unreadable.slice(0, 5).join(", ")}`,
+    };
+  }
+  return { commits, truncated, ok: true };
 }
 
 // ---------------------------------------------------------------------------

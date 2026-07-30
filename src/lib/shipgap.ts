@@ -157,6 +157,18 @@ export interface PackageFacts {
   commitsSincePublish: CommitFact[];
   /** True when more commits exist than were fetched, so the counts are a floor. */
   commitsTruncated?: boolean;
+  /**
+   * Whether the commit history after the last publish was actually read.
+   *
+   * `unknown` means the lookup failed or returned only partially. It must NEVER
+   * collapse into "no commits found", because that renders as `shipped` — this
+   * detector answering "nothing to ship" precisely when it cannot see. The
+   * registry axis has `registry_unknown` and the fleet axis discloses
+   * `measured === 0`; this is the same rule applied to the third axis.
+   */
+  commitsStatus?: "measured" | "unknown";
+  /** Reason the commit read failed, when `commitsStatus` is `unknown`. */
+  commitsError?: string;
   /** Installed version per machine id; a machine present with `null` means "reachable, package absent". */
   installed: Record<string, string | null>;
   /** Machine ids that could not be measured at all, with the reason. */
@@ -170,6 +182,7 @@ export interface PackageFacts {
 export type ShipStatus =
   | "not_a_package"
   | "registry_unknown"
+  | "commits_unknown"
   | "never_published"
   | "behind_publish"
   | "unshipped_changes"
@@ -188,9 +201,11 @@ export const SHIP_SEVERITY: Record<ShipStatus, number> = {
   unshipped_changes: 5,
   behind_publish: 4,
   never_published: 3,
-  // An unmeasured package is not a clean package. It ranks above "registry
-  // ahead" so a sweep that silently lost its registry auth cannot read as green.
+  // An unmeasured package is not a clean package. These rank above "registry
+  // ahead" so a sweep that silently lost its registry auth, or could not read a
+  // repo's commit history, cannot read as green.
   registry_unknown: 3,
+  commits_unknown: 3,
   registry_ahead: 2,
   shipped: 0,
   not_a_package: 0,
@@ -353,6 +368,18 @@ function classifyShip(facts: PackageFacts, reasons: string[]): ShipStatus {
     return "registry_ahead";
   }
 
+  // Only now, having established that branch and registry agree on the version,
+  // does the commit history decide the answer. If it could not be read, the
+  // honest answer is that we do not know — never "shipped". This detector's
+  // whole purpose is finding merged-but-unshipped work, so answering "clean"
+  // when blind is the exact failure it exists to catch.
+  if (facts.commitsStatus === "unknown") {
+    reasons.push(
+      `branch and registry agree at ${registryLatest}, but the commit history since that publish could not be read${facts.commitsError ? ` (${facts.commitsError})` : ""} — UNMEASURED, not clean; an unshipped fix would be invisible here`,
+    );
+    return "commits_unknown";
+  }
+
   const shipping = facts.commitsSincePublish.filter((commit) => commit.paths.some(isShippingRelevantPath));
   if (shipping.length > 0) {
     const src = shipping.filter((commit) => commit.paths.some(isSrcPath));
@@ -452,17 +479,48 @@ export interface ShipGapReport {
   summary: {
     packages: number;
     merged_but_unshipped: number;
+    /**
+     * Packages an axis could not measure. A sweep with a non-zero count here has
+     * NOT proven the fleet clean, however few gaps it reports.
+     */
+    unmeasured: number;
     by_ship_status: Record<string, number>;
     by_fleet_status: Record<string, number>;
   };
   entries: ShipGapEntry[];
 }
 
-/** The count that matters: repos whose default branch holds work the registry does not serve. */
+/**
+ * The count that matters: repos whose default branch holds work the registry
+ * does not serve.
+ *
+ * Deliberately excludes the unknown states. `commits_unknown` and
+ * `registry_unknown` are *unmeasured*, not *known clean* and not *known
+ * broken* — folding either into this figure would overstate it. They are
+ * counted by `unmeasuredPackages` instead, and a gate must consult both.
+ */
 export function mergedButUnshipped(entries: ShipGapEntry[]): ShipGapEntry[] {
   return entries.filter(
     (entry) => entry.shipStatus === "unshipped_changes" || entry.shipStatus === "behind_publish",
   );
+}
+
+/** Packages where an axis could not be read, on either the ship or the fleet side. */
+export function unmeasuredPackages(entries: ShipGapEntry[]): ShipGapEntry[] {
+  return entries.filter(
+    (entry) => entry.shipStatus === "commits_unknown" || entry.shipStatus === "registry_unknown",
+  );
+}
+
+/**
+ * Whether `--fail-on-gap` should exit non-zero.
+ *
+ * A blind sweep must not exit 0. Exiting 0 because nothing was found, when the
+ * reason nothing was found is that nothing could be read, is the same false
+ * reassurance this tool exists to detect.
+ */
+export function shouldFailGate(report: ShipGapReport): boolean {
+  return report.summary.merged_but_unshipped > 0 || report.summary.unmeasured > 0;
 }
 
 export function buildReport(
@@ -485,6 +543,7 @@ export function buildReport(
     summary: {
       packages: entries.length,
       merged_but_unshipped: mergedButUnshipped(entries).length,
+      unmeasured: unmeasuredPackages(entries).length,
       by_ship_status: byShip,
       by_fleet_status: byFleet,
     },

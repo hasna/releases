@@ -6,6 +6,7 @@ import { DuplicateReleaseError, ReleaseLedger } from "../lib/ledger.js";
 import { parsePackageSpec, recordRelease } from "../lib/record.js";
 import { reconcileReleases } from "../lib/reconcile.js";
 import { renderTable, runShipGap } from "../lib/shipgap-run.js";
+import { shouldFailGate } from "../lib/shipgap.js";
 import { runPublishGates } from "../lib/publish-gate-run.js";
 import { readNpmrcToken } from "../lib/npmrc.js";
 import { VERSION } from "../version.js";
@@ -154,7 +155,7 @@ program
   .option("--local-machine <id>", "Manifest id of the machine this runs on (probed without a network hop)")
   .option("--concurrency <n>", "Parallel repo lookups", "8")
   .option("--json", "Emit the full JSON report instead of a table")
-  .option("--fail-on-gap", "Exit non-zero when any merged-but-unshipped package is found")
+  .option("--fail-on-gap", "Exit non-zero when any merged-but-unshipped package is found, OR when any axis could not be measured")
   .action(async (opts: {
     org: string[];
     scope: string[];
@@ -192,7 +193,9 @@ program
       });
       if (opts.json) printJson(report);
       else console.log(renderTable(report));
-      if (opts.failOnGap && report.summary.merged_but_unshipped > 0) process.exit(2);
+      // A blind sweep must not exit 0: "found nothing" and "could read nothing"
+      // are different answers and only one of them is good news.
+      if (opts.failOnGap && shouldFailGate(report)) process.exit(2);
     } catch (error) {
       fail(error);
     }
